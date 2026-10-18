@@ -1,29 +1,114 @@
 // ==========================================
 // 1. KHỞI TẠO BẢN ĐỒ VÀ CÁC BIẾN TOÀN CỤC
 // ==========================================
+const VN_BOUNDS = [[8.0, 102.0], [23.6, 109.8]];
+
 const map = L.map('map').setView([16.047079, 108.206230], 6);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
-
-// Thứ tự lớp (z-index): viền Tỉnh/Huyện nằm dưới, điểm Target nằm trên cùng
-// => bấm vào điểm Target không bị viền che mất nên popup luôn hiện được
+// Thứ tự lớp (z-index): viền nền < viền có dữ liệu < điểm Target
+map.createPane('basePane');
+map.getPane('basePane').style.zIndex = 340;
 map.createPane('polygonPane');
 map.getPane('polygonPane').style.zIndex = 350;
 map.createPane('targetPane');
 map.getPane('targetPane').style.zIndex = 450;
+
+// ---- Nền bản đồ có tự động chuyển nguồn dự phòng ----
+const BASE_SOURCES = [
+    // Lưu ý: CARTO nay yêu cầu API key (trả về ô ảnh "API KEY REQUIRED"), nên đã bỏ.
+    {
+        name: 'OpenStreetMap',
+        make: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, referrerPolicy: 'origin',
+            attribution: '&copy; OpenStreetMap contributors'
+        })
+    },
+    {
+        name: 'Esri',
+        make: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19, attribution: 'Tiles &copy; Esri'
+        })
+    },
+    {
+        name: 'OpenStreetMap France',
+        make: () => L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+            subdomains: 'abc', maxZoom: 19,
+            attribution: '&copy; OpenStreetMap France | &copy; OpenStreetMap contributors'
+        })
+    }
+];
+
+let currentBase = null;
+
+function useBase(i) {
+    if (currentBase) {
+        currentBase.off();
+        map.removeLayer(currentBase);
+    }
+    const src = BASE_SOURCES[i];
+    const layer = src.make();
+    currentBase = layer;
+    let loaded = false;
+    let errors = 0;
+
+    layer.on('tileload', () => { loaded = true; });
+    layer.on('tileerror', () => {
+        errors++;
+        if (!loaded && errors >= 4) {
+            layer.off();
+            console.warn('Nền "' + src.name + '" không tải được, thử nguồn khác...');
+            if (i + 1 < BASE_SOURCES.length) {
+                useBase(i + 1);
+            } else {
+                showNotice(
+                    '<b>Không tải được ảnh nền bản đồ.</b><br>' +
+                    'Kiểm tra kết nối mạng, hoặc mở bằng Live Server / GitHub Pages thay vì file://.'
+                );
+            }
+        }
+    });
+    layer.addTo(map);
+}
+useBase(0);
+
+// Tính lại kích thước khung bản đồ sau khi trang dựng xong
+window.addEventListener('load', () => map.invalidateSize());
+window.addEventListener('resize', () => map.invalidateSize());
+
+// ---- Nút "Zoom về Việt Nam" ----
+const ZoomVNControl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd: function () {
+        const box = L.DomUtil.create('div', 'leaflet-bar');
+        const btn = L.DomUtil.create('a', '', box);
+        btn.href = '#';
+        btn.title = 'Zoom về Việt Nam';
+        btn.innerHTML = '🇻🇳';
+        btn.style.cssText = 'font-size:16px; line-height:30px; text-align:center; width:30px; height:30px; display:block; background:#fff; text-decoration:none;';
+        L.DomEvent.disableClickPropagation(box);
+        L.DomEvent.on(btn, 'click', e => {
+            L.DomEvent.preventDefault(e);
+            map.fitBounds(VN_BOUNDS);
+        });
+        return box;
+    }
+});
+map.addControl(new ZoomVNControl());
 
 const markersLayer = L.layerGroup().addTo(map);
 const labelsLayer = L.layerGroup().addTo(map);
 const provincePolygonsLayer = L.layerGroup().addTo(map);
 const districtPolygonsLayer = L.layerGroup().addTo(map);
 
+// Lớp viền nền: vẽ TOÀN BỘ ranh giới Việt Nam (không phụ thuộc dữ liệu Excel)
+const baseProvinceLayer = L.layerGroup();
+const baseDistrictLayer = L.layerGroup();
+
 // Nguồn dữ liệu ranh giới
 const PROVINCE_URL = 'https://raw.githubusercontent.com/TungTh/tungth.github.io/master/data/vn-provinces.json';
-// Dùng đường dẫn TƯƠNG ĐỐI (không có dấu "/" ở đầu) để chạy được cả trên GitHub Pages dạng user.github.io/ten-repo/
+// Dùng đường dẫn TƯƠNG ĐỐI để chạy được cả trên GitHub Pages dạng user.github.io/ten-repo/
 const EXCEL_URL = 'toadoexcel.xlsx';                 // đặt cạnh index.html
-const DISTRICT_URL = 'data/vn-districts.geojson';    // GADM 4.1 level 2 (huyện trước 2025)
+const DISTRICT_URL = 'data/vn-districts.geojson';    // GADM 4.1 level 2
 
 const UNKNOWN = 'Chưa xác định';
 
@@ -78,7 +163,7 @@ function parseCoord(v) {
     return parseFloat(s);
 }
 
-// Đọc doanh số (bỏ dấu phẩy ngăn cách hàng nghìn, tránh "1,234,567" bị đọc thành 1)
+// Đọc doanh số (bỏ dấu phẩy ngăn cách hàng nghìn)
 function parseMoney(v) {
     if (v === null || v === undefined || v === '') return 0;
     const n = parseFloat(String(v).replace(/[,\s]/g, ''));
@@ -98,14 +183,14 @@ function getDistrictParent(props) {
     return props.NAME_1 || props.TEN_TINH || props.Ten_Tinh || '';
 }
 
-// Nhiều huyện trùng tên ở các tỉnh khác nhau (vd: Châu Thành) => gắn thêm tên tỉnh
+// Nhiều huyện trùng tên ở các tỉnh khác nhau => gắn thêm tên tỉnh
 function getDistrictLabel(props) {
     const name = getDistrictName(props);
     const parent = getDistrictParent(props);
     return parent ? `${name} (${parent})` : name;
 }
 
-// Tính sẵn bbox cho từng polygon để tìm điểm nhanh hơn rất nhiều
+// Tính sẵn bbox cho từng polygon để tìm điểm nhanh hơn
 function prepareFeatures(geo) {
     if (!geo || !geo.features) return;
     geo.features.forEach((f, i) => {
@@ -128,7 +213,7 @@ function findFeature(geo, pt) {
     return null;
 }
 
-// Trả về { prov: feature|null, dist: feature|null } cho một tọa độ
+// Trả về { prov, dist } cho một tọa độ
 function locate(lat, lng) {
     if (isNaN(lat) || isNaN(lng)) return { prov: null, dist: null };
     const pt = turf.point([lng, lat]);
@@ -138,7 +223,7 @@ function locate(lat, lng) {
     };
 }
 
-// Chuỗi "Huyện - Tỉnh" cho riêng một điểm (Actual và Target có thể nằm ở nơi khác nhau)
+// Chuỗi "Huyện - Tỉnh" cho riêng một điểm
 function areaOf(loc) {
     let prov = '';
     if (loc.prov) prov = getProvinceName(loc.prov.properties);
@@ -150,7 +235,7 @@ function areaOf(loc) {
 }
 
 // ==========================================
-// 2b. ĐỌC FILE EXCEL TRỰC TIẾP TRONG TRÌNH DUYỆT (SheetJS)
+// 2b. HIỂN THỊ THÔNG BÁO
 // ==========================================
 function showNotice(html) {
     const box = document.getElementById('load-notice');
@@ -164,7 +249,33 @@ function hideNotice() {
     if (box) box.style.display = 'none';
 }
 
-// Các cột số: lấy giá trị thật của ô (không bị làm tròn theo định dạng hiển thị)
+// ==========================================
+// 2c. LỚP VIỀN NỀN TOÀN VIỆT NAM
+// ==========================================
+function buildBaseLayers() {
+    const mk = (geo, weight) => L.geoJSON(geo, {
+        pane: 'basePane',
+        interactive: false,   // không chặn click/tooltip của lớp phía trên
+        style: { color: '#7a7a7a', weight: weight, opacity: 0.8, fill: false }
+    });
+    baseProvinceLayer.clearLayers();
+    baseDistrictLayer.clearLayers();
+    if (vietnamGeoJSON) mk(vietnamGeoJSON, 1.2).addTo(baseProvinceLayer);
+    if (districtGeoJSON) mk(districtGeoJSON, 0.6).addTo(baseDistrictLayer);
+}
+
+// Bật viền Huyện (nếu có) khi công tắc bật, ngược lại hiện viền Tỉnh
+function refreshBaseLayers() {
+    map.removeLayer(baseProvinceLayer);
+    map.removeLayer(baseDistrictLayer);
+    const wantDistricts = document.getElementById('toggle-districts').checked;
+    if (wantDistricts && districtGeoJSON) map.addLayer(baseDistrictLayer);
+    else if (vietnamGeoJSON) map.addLayer(baseProvinceLayer);
+}
+
+// ==========================================
+// 2d. ĐỌC FILE EXCEL TRỰC TIẾP TRONG TRÌNH DUYỆT (SheetJS)
+// ==========================================
 const NUMERIC_KEYS = [
     ...KEYS.latActual, ...KEYS.lngActual,
     ...KEYS.latTarget, ...KEYS.lngTarget,
@@ -177,7 +288,7 @@ function parseWorkbook(buffer) {
 
     // raw:false => ngày tháng hiển thị đúng như trên màn hình Excel
     const shown = XLSX.utils.sheet_to_json(ws, { raw: false });
-    // raw:true  => số nguyên bản (tọa độ, doanh số) không bị làm tròn / thêm dấu phẩy
+    // raw:true  => số nguyên bản (tọa độ, doanh số) không bị làm tròn
     const raw = XLSX.utils.sheet_to_json(ws, { raw: true });
 
     shown.forEach((row, i) => {
@@ -192,8 +303,7 @@ function parseWorkbook(buffer) {
     return shown;
 }
 
-// Mở trực tiếp index.html bằng file:// thì trình duyệt chặn đọc file khác,
-// khi đó cho người dùng tự chọn file Excel.
+// Mở bằng file:// thì trình duyệt chặn đọc file khác => cho người dùng tự chọn file
 function askUserForExcel() {
     return new Promise(resolve => {
         showNotice(
@@ -227,98 +337,107 @@ function loadExcelData() {
         });
 }
 
+function fetchJson(url, label) {
+    return fetch(url)
+        .then(res => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        })
+        .catch(err => {
+            console.warn('Không tải được ranh giới ' + label + ' (' + url + '):', err);
+            return null;
+        });
+}
+
 // ==========================================
-// 3. TẢI DỮ LIỆU EXCEL VÀ GEOJSON
+// 3. TẢI GEOJSON (độc lập) VÀ EXCEL, RỒI GHÉP LẠI
 // ==========================================
-loadExcelData()
-    .then(data => {
+// Viền Việt Nam hiện ra ngay khi tải xong GeoJSON, không cần chờ Excel
+const geoPromise = Promise.all([
+    fetchJson(PROVINCE_URL, 'Tỉnh'),
+    fetchJson(DISTRICT_URL, 'Quận/Huyện')
+]).then(([provData, distData]) => {
+    vietnamGeoJSON = provData;
+    districtGeoJSON = distData;
+
+    console.log('Tỉnh tải được:', !!vietnamGeoJSON, vietnamGeoJSON ? vietnamGeoJSON.features.length : 0);
+    console.log('Huyện tải được:', !!districtGeoJSON, districtGeoJSON ? districtGeoJSON.features.length : 0);
+    if (districtGeoJSON && districtGeoJSON.features.length) {
+        console.log('Thuộc tính huyện mẫu:', districtGeoJSON.features[0].properties);
+    }
+
+    if (!districtGeoJSON && location.protocol === 'file:') {
+        showNotice(
+            '<b>Chưa hiển thị được ranh giới Quận/Huyện.</b><br>' +
+            'Trình duyệt chặn đọc file khi mở trực tiếp (file://). ' +
+            'Hãy mở bằng <b>Live Server</b> (VS Code) hoặc <code>python -m http.server</code>, ' +
+            'hoặc xem trên GitHub Pages.'
+        );
+    }
+
+    prepareFeatures(vietnamGeoJSON);
+    prepareFeatures(districtGeoJSON);
+    buildBaseLayers();
+    refreshBaseLayers();
+});
+
+const excelPromise = loadExcelData();
+
+Promise.all([excelPromise, geoPromise])
+    .then(([data]) => {
         globalData = data;
 
-        // Tải Tỉnh và Quận/Huyện cùng lúc
-        Promise.all([
-            fetch(PROVINCE_URL).then(res => res.ok ? res.json() : null).catch(() => null),
-            fetch(DISTRICT_URL).then(res => res.ok ? res.json() : null).catch(() => null)
-        ]).then(([provData, distData]) => {
-            vietnamGeoJSON = provData;
-            districtGeoJSON = distData;
+        // --- QUÉT KHÔNG GIAN: tìm Tỉnh & Huyện cho từng điểm Actual / Target ---
+        globalData.forEach(row => {
+            const latA = parseCoord(getVal(row, KEYS.latActual));
+            const lngA = parseCoord(getVal(row, KEYS.lngActual));
+            const latT = parseCoord(getVal(row, KEYS.latTarget));
+            const lngT = parseCoord(getVal(row, KEYS.lngTarget));
 
-            console.log('Tỉnh tải được:', !!vietnamGeoJSON, vietnamGeoJSON ? vietnamGeoJSON.features.length : 0);
-            console.log('Huyện tải được:', !!districtGeoJSON, districtGeoJSON ? districtGeoJSON.features.length : 0);
-            if (districtGeoJSON && districtGeoJSON.features.length) {
-                console.log('Thuộc tính huyện mẫu:', districtGeoJSON.features[0].properties);
+            row._hasActual = !isNaN(latA) && !isNaN(lngA);
+            row._hasTarget = !isNaN(latT) && !isNaN(lngT);
+            row._latA = latA; row._lngA = lngA;
+            row._latT = latT; row._lngT = lngT;
+
+            const locA = row._hasActual ? locate(latA, lngA) : { prov: null, dist: null };
+            const locT = row._hasTarget ? locate(latT, lngT) : { prov: null, dist: null };
+
+            row._provActual = locA.prov ? locA.prov._idx : -1;
+            row._distActual = locA.dist ? locA.dist._idx : -1;
+            row._provTarget = locT.prov ? locT.prov._idx : -1;
+            row._distTarget = locT.dist ? locT.dist._idx : -1;
+
+            row._areaActual = areaOf(locA);
+            row._areaTarget = areaOf(locT);
+
+            // Vị trí chính của dòng: ưu tiên Actual, nếu không có thì dùng Target
+            const main = row._hasActual ? locA : locT;
+
+            row.calculated_province = UNKNOWN;
+            row.calculated_district = UNKNOWN;
+            row.district_short = UNKNOWN;
+
+            if (main.prov) {
+                row.calculated_province = getProvinceName(main.prov.properties);
+            } else if (main.dist) {
+                row.calculated_province = getDistrictParent(main.dist.properties) || UNKNOWN;
             }
 
-            if (!vietnamGeoJSON) console.warn('Không tải được ranh giới Tỉnh.');
-            if (!districtGeoJSON) {
-                console.warn('Không tải được ranh giới Quận/Huyện (data/vn-districts.geojson).');
-                if (location.protocol === 'file:') {
-                    showNotice(
-                        '<b>Chưa hiển thị được ranh giới Quận/Huyện.</b><br>' +
-                        'Trình duyệt chặn đọc file khi mở trực tiếp (file://). ' +
-                        'Hãy mở bằng <b>Live Server</b> (VS Code) hoặc <code>python -m http.server</code>, ' +
-                        'hoặc xem trên GitHub Pages.'
-                    );
-                }
+            if (main.dist) {
+                row.calculated_district = getDistrictLabel(main.dist.properties);
+                row.district_short = getDistrictName(main.dist.properties);
             }
-
-            prepareFeatures(vietnamGeoJSON);
-            prepareFeatures(districtGeoJSON);
-
-            // --- QUÉT KHÔNG GIAN: tìm Tỉnh & Huyện cho từng điểm Actual / Target ---
-            globalData.forEach(row => {
-                const latA = parseCoord(getVal(row, KEYS.latActual));
-                const lngA = parseCoord(getVal(row, KEYS.lngActual));
-                const latT = parseCoord(getVal(row, KEYS.latTarget));
-                const lngT = parseCoord(getVal(row, KEYS.lngTarget));
-
-                row._hasActual = !isNaN(latA) && !isNaN(lngA);
-                row._hasTarget = !isNaN(latT) && !isNaN(lngT);
-                row._latA = latA; row._lngA = lngA;
-                row._latT = latT; row._lngT = lngT;
-
-                const locA = row._hasActual ? locate(latA, lngA) : { prov: null, dist: null };
-                const locT = row._hasTarget ? locate(latT, lngT) : { prov: null, dist: null };
-
-                // Chỉ số polygon của từng điểm (dùng để đếm thống kê)
-                row._provActual = locA.prov ? locA.prov._idx : -1;
-                row._distActual = locA.dist ? locA.dist._idx : -1;
-                row._provTarget = locT.prov ? locT.prov._idx : -1;
-                row._distTarget = locT.dist ? locT.dist._idx : -1;
-
-                // Khu vực riêng của từng điểm, dùng cho popup
-                row._areaActual = areaOf(locA);
-                row._areaTarget = areaOf(locT);
-
-                // Vị trí chính của dòng: ưu tiên Actual, nếu không có thì dùng Target
-                const main = row._hasActual ? locA : locT;
-
-                row.calculated_province = UNKNOWN;
-                row.calculated_district = UNKNOWN;
-                row.district_short = UNKNOWN;
-
-                if (main.prov) {
-                    row.calculated_province = getProvinceName(main.prov.properties);
-                } else if (main.dist) {
-                    // Không khớp được file Tỉnh thì lấy tên tỉnh từ file Huyện
-                    row.calculated_province = getDistrictParent(main.dist.properties) || UNKNOWN;
-                }
-
-                if (main.dist) {
-                    row.calculated_district = getDistrictLabel(main.dist.properties);
-                    row.district_short = getDistrictName(main.dist.properties);
-                }
-            });
-
-            const missingDist = globalData.filter(r => r.calculated_district === UNKNOWN).length;
-            console.log(`Số dòng chưa xác định được huyện: ${missingDist} / ${globalData.length}`);
-
-            renderSidebar(globalData);
-            handleFilterChange();
         });
+
+        const missingDist = globalData.filter(r => r.calculated_district === UNKNOWN).length;
+        console.log(`Số dòng chưa xác định được huyện: ${missingDist} / ${globalData.length}`);
+
+        renderSidebar(globalData);
+        handleFilterChange();
     })
     .catch(error => {
-        console.error('Lỗi khi tải dữ liệu Excel:', error);
-        showNotice('<b>Lỗi khi đọc dữ liệu Excel.</b> Mở Console (F12) để xem chi tiết.');
+        console.error('Lỗi khi tải dữ liệu:', error);
+        showNotice('<b>Lỗi khi đọc dữ liệu.</b> Mở Console (F12) để xem chi tiết.');
     });
 
 // ==========================================
@@ -334,8 +453,12 @@ document.getElementById('toggle-names').addEventListener('change', function (e) 
     if (e.target.checked) map.addLayer(labelsLayer);
     else map.removeLayer(labelsLayer);
 });
-// Bật/tắt viền Quận/Huyện => vẽ lại bản đồ
-document.getElementById('toggle-districts').addEventListener('change', handleFilterChange);
+
+// Bật/tắt viền Quận/Huyện => cập nhật lớp nền và vẽ lại bản đồ
+document.getElementById('toggle-districts').addEventListener('change', function () {
+    refreshBaseLayers();
+    handleFilterChange();
+});
 
 document.querySelectorAll('.select-all').forEach(btn => {
     btn.addEventListener('click', function () {
@@ -456,7 +579,6 @@ function handleFilterChange() {
     const updateUI = (listId, availableSet) => {
         document.querySelectorAll(`#${listId} .filter-item`).forEach(item => {
             const checkbox = item.querySelector('input[type="checkbox"]');
-            // checkbox.value đã được trình duyệt giải mã HTML nên so khớp trực tiếp được
             item.style.display = availableSet.has(checkbox.value) ? 'block' : 'none';
         });
     };
@@ -505,7 +627,7 @@ function renderMap(data) {
         const manager = escapeHtml(getVal(row, KEYS.manager) || 'Chưa rõ');
         const dateVal = escapeHtml(getVal(row, KEYS.date) || 'Không rõ');
 
-        // Địa chỉ shop (cột shop_address) + link mở Google Maps để đối chiếu với vị trí điểm
+        // Địa chỉ shop + link mở Google Maps để đối chiếu với vị trí điểm
         const rawAddress = String(getVal(row, KEYS.shopAddress) || '').trim();
         const shopAddress = rawAddress ? escapeHtml(rawAddress) : 'Chưa có';
         const mapsLink = rawAddress
@@ -515,7 +637,6 @@ function renderMap(data) {
         const dsValue = parseMoney(getVal(row, KEYS.sales));
         const formattedDs = dsValue.toLocaleString('vi-VN');
 
-        // area: khu vực của chính điểm đó; lat/lng: tọa độ của điểm đó
         const popupContent = (type, color, area, lat, lng) => `
             <div style="font-size: 14px;">
                 <b style="color: ${color};">[${type}]</b><br>
@@ -542,7 +663,7 @@ function renderMap(data) {
 
         if (showTarget && row._hasTarget) {
             const markerTarget = L.circleMarker([row._latT, row._lngT], {
-                pane: 'targetPane', // nằm trên viền Tỉnh/Huyện để bấm vào được
+                pane: 'targetPane',
                 color: 'red', fillColor: '#f03', fillOpacity: 0.7, radius: 8
             });
             markerTarget.bindPopup(popupContent('TARGET - MỤC TIÊU', 'red', row._areaTarget, row._latT, row._lngT));
@@ -556,9 +677,7 @@ function renderMap(data) {
     document.getElementById('count-actual').textContent = countActual;
     document.getElementById('count-target').textContent = countTarget;
 
-    // ==========================================
-    // VẼ VIỀN QUẬN / HUYỆN (chỉ huyện có ít nhất 1 điểm)
-    // ==========================================
+    // ---- VẼ VIỀN QUẬN / HUYỆN CÓ DỮ LIỆU (tô màu, đè lên viền nền) ----
     if (drawDistricts) {
         distCounts.forEach((c, idx) => {
             const distFeature = districtGeoJSON.features[idx];
@@ -600,9 +719,7 @@ function renderMap(data) {
         });
     }
 
-    // ==========================================
-    // VẼ VIỀN TỈNH VÀ THỐNG KÊ SIDEBAR PHẢI
-    // ==========================================
+    // ---- VẼ VIỀN TỈNH VÀ THỐNG KÊ SIDEBAR PHẢI ----
     const provinceStatsList = [];
 
     if (vietnamGeoJSON) {
@@ -622,7 +739,7 @@ function renderMap(data) {
                 percent: percentage
             });
 
-            // Chỉ vẽ mảng viền Tỉnh khi không vẽ viền Huyện (tránh rối mắt)
+            // Chỉ tô màu viền Tỉnh khi không vẽ viền Huyện (tránh rối mắt)
             if (!drawDistricts) {
                 const provincePolygon = L.geoJSON(provinceFeature, {
                     pane: 'polygonPane',

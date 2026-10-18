@@ -3,9 +3,7 @@
 // ==========================================
 const VN_BOUNDS = [[8.0, 102.0], [23.6, 109.8]];
 
-// zoomAnimation:false => tránh marker bị lệch/dính chùm do hiệu ứng zoom khi có nhiều điểm
-const map = L.map('map', { zoomAnimation: false, markerZoomAnimation: false })
-    .setView([16.047079, 108.206230], 6);
+const map = L.map('map').setView([16.047079, 108.206230], 6);
 
 // Thứ tự lớp (z-index): viền nền < viền có dữ liệu < điểm Target
 map.createPane('basePane');
@@ -98,19 +96,6 @@ const ZoomVNControl = L.Control.extend({
 map.addControl(new ZoomVNControl());
 
 const markersLayer = L.layerGroup().addTo(map);
-
-// Sau mỗi lần zoom, ép toàn bộ điểm tính lại vị trí để không bị lệch
-map.on('zoomend', () => {
-    markersLayer.eachLayer(l => {
-        if (typeof l.update === 'function') l.update();
-        else if (typeof l.redraw === 'function') l.redraw();
-    });
-});
-
-// Khung bản đồ đổi kích thước (thu/phóng sidebar, đổi cỡ cửa sổ) => tính lại
-if (window.ResizeObserver) {
-    new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
-}
 const labelsLayer = L.layerGroup().addTo(map);
 const provincePolygonsLayer = L.layerGroup().addTo(map);
 const districtPolygonsLayer = L.layerGroup().addTo(map);
@@ -250,7 +235,7 @@ function areaOf(loc) {
 }
 
 // ==========================================
-// 2b. HIỂN THỊ THÔNG BÁO
+// 2b. HIỂN THỊ THÔNG BÁO + TÊN FILE
 // ==========================================
 function showNotice(html) {
     const box = document.getElementById('load-notice');
@@ -262,6 +247,11 @@ function showNotice(html) {
 function hideNotice() {
     const box = document.getElementById('load-notice');
     if (box) box.style.display = 'none';
+}
+
+function setFileName(text) {
+    const el = document.getElementById('file-name');
+    if (el) el.textContent = text;
 }
 
 // ==========================================
@@ -299,7 +289,7 @@ const NUMERIC_KEYS = [
 
 function parseWorkbook(buffer) {
     const wb = XLSX.read(buffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
+    const ws = wb.Sheets[wb.SheetNames[0]];   // chỉ đọc sheet đầu tiên
 
     // raw:false => ngày tháng hiển thị đúng như trên màn hình Excel
     const shown = XLSX.utils.sheet_to_json(ws, { raw: false });
@@ -318,6 +308,12 @@ function parseWorkbook(buffer) {
     return shown;
 }
 
+// Kiểm tra file có cột tọa độ hay không
+function hasCoordColumns(rows) {
+    return rows.length > 0 && rows.some(r =>
+        getVal(r, KEYS.latActual) !== null || getVal(r, KEYS.latTarget) !== null);
+}
+
 // Mở bằng file:// thì trình duyệt chặn đọc file khác => cho người dùng tự chọn file
 function askUserForExcel() {
     return new Promise(resolve => {
@@ -332,6 +328,7 @@ function askUserForExcel() {
             const reader = new FileReader();
             reader.onload = ev => {
                 hideNotice();
+                setFileName('Đang dùng: ' + file.name);
                 resolve(parseWorkbook(ev.target.result));
             };
             reader.readAsArrayBuffer(file);
@@ -398,57 +395,68 @@ const geoPromise = Promise.all([
 
 const excelPromise = loadExcelData();
 
-// Xử lý một bộ dữ liệu (dùng cho cả file mặc định lẫn file người dùng tải lên)
+// Gán Tỉnh/Huyện cho từng dòng rồi dựng lại giao diện (dùng cho cả file mặc định lẫn file upload)
 function processData(data) {
-        globalData = data;
+    globalData = data;
 
-        // --- QUÉT KHÔNG GIAN: tìm Tỉnh & Huyện cho từng điểm Actual / Target ---
-        globalData.forEach(row => {
-            const latA = parseCoord(getVal(row, KEYS.latActual));
-            const lngA = parseCoord(getVal(row, KEYS.lngActual));
-            const latT = parseCoord(getVal(row, KEYS.latTarget));
-            const lngT = parseCoord(getVal(row, KEYS.lngTarget));
+    // --- QUÉT KHÔNG GIAN: tìm Tỉnh & Huyện cho từng điểm Actual / Target ---
+    globalData.forEach(row => {
+        const latA = parseCoord(getVal(row, KEYS.latActual));
+        const lngA = parseCoord(getVal(row, KEYS.lngActual));
+        const latT = parseCoord(getVal(row, KEYS.latTarget));
+        const lngT = parseCoord(getVal(row, KEYS.lngTarget));
 
-            row._hasActual = !isNaN(latA) && !isNaN(lngA);
-            row._hasTarget = !isNaN(latT) && !isNaN(lngT);
-            row._latA = latA; row._lngA = lngA;
-            row._latT = latT; row._lngT = lngT;
+        row._hasActual = !isNaN(latA) && !isNaN(lngA);
+        row._hasTarget = !isNaN(latT) && !isNaN(lngT);
+        row._latA = latA; row._lngA = lngA;
+        row._latT = latT; row._lngT = lngT;
 
-            const locA = row._hasActual ? locate(latA, lngA) : { prov: null, dist: null };
-            const locT = row._hasTarget ? locate(latT, lngT) : { prov: null, dist: null };
+        const locA = row._hasActual ? locate(latA, lngA) : { prov: null, dist: null };
+        const locT = row._hasTarget ? locate(latT, lngT) : { prov: null, dist: null };
 
-            row._provActual = locA.prov ? locA.prov._idx : -1;
-            row._distActual = locA.dist ? locA.dist._idx : -1;
-            row._provTarget = locT.prov ? locT.prov._idx : -1;
-            row._distTarget = locT.dist ? locT.dist._idx : -1;
+        row._provActual = locA.prov ? locA.prov._idx : -1;
+        row._distActual = locA.dist ? locA.dist._idx : -1;
+        row._provTarget = locT.prov ? locT.prov._idx : -1;
+        row._distTarget = locT.dist ? locT.dist._idx : -1;
 
-            row._areaActual = areaOf(locA);
-            row._areaTarget = areaOf(locT);
+        row._areaActual = areaOf(locA);
+        row._areaTarget = areaOf(locT);
 
-            // Vị trí chính của dòng: ưu tiên Actual, nếu không có thì dùng Target
-            const main = row._hasActual ? locA : locT;
+        // Vị trí chính của dòng: ưu tiên Actual, nếu không có thì dùng Target
+        const main = row._hasActual ? locA : locT;
 
-            row.calculated_province = UNKNOWN;
-            row.calculated_district = UNKNOWN;
-            row.district_short = UNKNOWN;
+        row.calculated_province = UNKNOWN;
+        row.calculated_district = UNKNOWN;
+        row.district_short = UNKNOWN;
 
-            if (main.prov) {
-                row.calculated_province = getProvinceName(main.prov.properties);
-            } else if (main.dist) {
-                row.calculated_province = getDistrictParent(main.dist.properties) || UNKNOWN;
-            }
+        if (main.prov) {
+            row.calculated_province = getProvinceName(main.prov.properties);
+        } else if (main.dist) {
+            row.calculated_province = getDistrictParent(main.dist.properties) || UNKNOWN;
+        }
 
-            if (main.dist) {
-                row.calculated_district = getDistrictLabel(main.dist.properties);
-                row.district_short = getDistrictName(main.dist.properties);
-            }
-        });
+        if (main.dist) {
+            row.calculated_district = getDistrictLabel(main.dist.properties);
+            row.district_short = getDistrictName(main.dist.properties);
+        }
+    });
 
-        const missingDist = globalData.filter(r => r.calculated_district === UNKNOWN).length;
-        console.log(`Số dòng chưa xác định được huyện: ${missingDist} / ${globalData.length}`);
+    const missingDist = globalData.filter(r => r.calculated_district === UNKNOWN).length;
+    console.log(`Số dòng chưa xác định được huyện: ${missingDist} / ${globalData.length}`);
 
-        renderSidebar(globalData);
-        handleFilterChange();
+    map.closePopup();
+    renderSidebar(globalData);   // tạo lại các bộ lọc, mặc định chọn hết
+    handleFilterChange();
+}
+
+// Zoom vào vùng chứa các điểm của dữ liệu hiện tại
+function fitToData() {
+    const pts = [];
+    globalData.forEach(r => {
+        if (r._hasActual) pts.push([r._latA, r._lngA]);
+        if (r._hasTarget) pts.push([r._latT, r._lngT]);
+    });
+    if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 15 });
 }
 
 Promise.all([excelPromise, geoPromise])
@@ -457,6 +465,49 @@ Promise.all([excelPromise, geoPromise])
         console.error('Lỗi khi tải dữ liệu:', error);
         showNotice('<b>Lỗi khi đọc dữ liệu.</b> Mở Console (F12) để xem chi tiết.');
     });
+
+// ==========================================
+// 3b. UPLOAD FILE EXCEL MỚI
+// ==========================================
+const uploadInput = document.getElementById('excel-upload');
+document.getElementById('btn-upload').addEventListener('click', () => uploadInput.click());
+
+uploadInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onerror = () => {
+        showNotice('<b>Không đọc được file.</b> Hãy thử lại.');
+        uploadInput.value = '';
+    };
+    reader.onload = async ev => {
+        try {
+            await geoPromise;  // đảm bảo ranh giới đã tải xong
+            const rows = parseWorkbook(ev.target.result);
+
+            if (!hasCoordColumns(rows)) {
+                showNotice(
+                    '<b>File không đúng định dạng.</b><br>' +
+                    'Cần có các cột như <code>latitude_actual</code>, <code>longitude_actual</code>, ' +
+                    '<code>latitude_target</code>, <code>longitude_target</code>...'
+                );
+                return;
+            }
+
+            hideNotice();
+            processData(rows);
+            fitToData();
+            setFileName('Đang dùng: ' + file.name + ' (' + rows.length + ' dòng)');
+        } catch (err) {
+            console.error('Lỗi đọc file upload:', err);
+            showNotice('<b>Lỗi khi đọc file Excel.</b> Mở Console (F12) để xem chi tiết.');
+        } finally {
+            uploadInput.value = '';  // cho phép chọn lại cùng một file
+        }
+    };
+    reader.readAsArrayBuffer(file);
+});
 
 // ==========================================
 // 4. KHỞI TẠO CÁC SỰ KIỆN GIAO DIỆN
@@ -502,72 +553,6 @@ document.querySelectorAll('.deselect-all').forEach(btn => {
 // ==========================================
 // 5. TẠO DANH SÁCH BỘ LỌC BÊN TRÁI
 // ==========================================
-// ---- Ô tải file Excel khác lên (chèn vào đầu sidebar trái) ----
-(function addUploadControl() {
-    const sidebar = document.getElementById('sidebar');
-    const filters = document.getElementById('filters-container');
-    if (!sidebar || !filters) return;
-
-    const box = document.createElement('div');
-    box.className = 'filter-section';
-    box.style.background = '#fff8e1';
-    box.innerHTML =
-        '<h4>📂 Tải file dữ liệu khác</h4>' +
-        '<input type="file" id="upload-excel" accept=".xlsx,.xls" style="width:100%; font-size:12px;">' +
-        '<div id="upload-status" style="font-size:12px; color:#666; margin-top:6px;">Đang dùng: file mặc định (toadoexcel.xlsx)</div>';
-    sidebar.insertBefore(box, filters);
-
-    const input = document.getElementById('upload-excel');
-    const status = document.getElementById('upload-status');
-
-    input.addEventListener('change', e => {
-        const file = e.target.files[0];
-        if (!file) return;
-        status.style.color = '#666';
-        status.textContent = 'Đang đọc ' + file.name + '...';
-
-        const reader = new FileReader();
-        reader.onerror = () => {
-            status.style.color = '#c00';
-            status.textContent = 'Không đọc được file này.';
-        };
-        reader.onload = ev => {
-            try {
-                const rows = parseWorkbook(ev.target.result);
-                if (!rows.length) throw new Error('File không có dòng dữ liệu nào.');
-
-                // Chờ ranh giới Tỉnh/Huyện tải xong rồi mới xử lý
-                geoPromise.then(() => {
-                    hideNotice();
-                    processData(rows);
-
-                    const pts = [];
-                    globalData.forEach(r => {
-                        if (r._hasActual) pts.push([r._latA, r._lngA]);
-                        if (r._hasTarget) pts.push([r._latT, r._lngT]);
-                    });
-
-                    if (!pts.length) {
-                        status.style.color = '#c00';
-                        status.textContent = file.name + ': không thấy cột tọa độ hợp lệ ' +
-                            '(cần latitude_actual, longitude_actual, latitude_target, longitude_target).';
-                        return;
-                    }
-                    map.fitBounds(pts, { padding: [40, 40] });
-                    status.style.color = '#28a745';
-                    status.textContent = 'Đang dùng: ' + file.name + ' (' + rows.length + ' dòng)';
-                });
-            } catch (err) {
-                console.error('Lỗi đọc file tải lên:', err);
-                status.style.color = '#c00';
-                status.textContent = 'Lỗi: ' + err.message;
-            }
-            input.value = '';   // cho phép chọn lại cùng một file
-        };
-        reader.readAsArrayBuffer(file);
-    });
-})();
-
 function renderSidebar(data) {
     const createCheckboxes = (containerId, items) => {
         const container = document.getElementById(containerId);

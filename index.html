@@ -7,16 +7,24 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="style.css">
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
-    <!-- SheetJS: đọc file toadoexcel.xlsx trực tiếp trong trình duyệt (không cần Node) -->
+    <!-- SheetJS: đọc file .xlsx trực tiếp trong trình duyệt (không cần Node) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
-    <!-- Thông báo khi không tự đọc được file (vd: mở trực tiếp bằng file://) -->
+    <!-- Thông báo khi có lỗi / không tự đọc được file -->
     <div id="load-notice"></div>
     <div id="app-container">
         <!-- Thanh sidebar bên TRÁI -->
         <div id="sidebar">
-            <h3 class="sidebar-title">-BẢN ĐỒ TỌA ĐỘ- </h3>
+            <h3 class="sidebar-title">BẢN ĐỒ TỌA ĐỘ -- </h3>
+
+            <!-- UPLOAD FILE EXCEL KHÁC -->
+            <div class="upload-section">
+                <input type="file" id="excel-upload" accept=".xlsx,.xls" hidden>
+                <button type="button" id="btn-upload">📁 Tải file Excel khác</button>
+                <div id="file-name">Đang dùng: toadoexcel.xlsx</div>
+            </div>
+
             <div class="summary-section">
                 <h4>📊 Thống kê hiển thị</h4>
                 <div class="summary-box">
@@ -49,8 +57,7 @@
                     </div>
                     <div id="province-list"><span style="font-size: 12px; color: gray; font-style: italic;">Đang tải ranh giới...</span></div>
                 </div>
-                
-                <!-- BỘ LỌC THEO QUẬN/HUYỆN MỚI THÊM -->
+
                 <div class="filter-section scrollable-list">
                     <div class="filter-header">
                         <h4>5. Lọc theo Quận/Huyện</h4>
@@ -75,17 +82,16 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- BẢN ĐỒ Ở GIỮA -->
         <div id="map"></div>
 
         <!-- Thanh sidebar bên PHẢI -->
         <div id="right-sidebar">
             <h3 class="sidebar-title" style="background-color: #28a745;">CHI TIẾT KINH DOANH</h3>
-            
+
             <div id="right-scroll-container">
                 <div class="filter-section" style="border-bottom: none; padding-bottom: 0;">
-                    <!-- CÔNG TẮC BẬT TẮT QUẬN HUYỆN -->
                     <div class="filter-item">
                         <input type="checkbox" id="toggle-districts" checked>
                         <label for="toggle-districts" style="font-weight: bold; color: #d35400;">Bật/Tắt viền Quận/Huyện</label>
@@ -95,7 +101,7 @@
                         <label for="toggle-names">Bật/Tắt chữ tên Tỉnh/Quận</label>
                     </div>
                 </div>
-                
+
                 <!-- Bảng Doanh số -->
                 <div class="filter-section stats-section">
                     <h4 style="color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 5px;">💰 Thống kê Doanh số</h4>
@@ -110,7 +116,7 @@
             </div>
         </div>
     </div>
-    
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="script.js"></script>
 </body>

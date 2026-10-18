@@ -3,7 +3,9 @@
 // ==========================================
 const VN_BOUNDS = [[8.0, 102.0], [23.6, 109.8]];
 
-const map = L.map('map').setView([16.047079, 108.206230], 6);
+// zoomAnimation:false => tránh marker bị lệch/dính chùm do hiệu ứng zoom khi có nhiều điểm
+const map = L.map('map', { zoomAnimation: false, markerZoomAnimation: false })
+    .setView([16.047079, 108.206230], 6);
 
 // Thứ tự lớp (z-index): viền nền < viền có dữ liệu < điểm Target
 map.createPane('basePane');
@@ -96,6 +98,19 @@ const ZoomVNControl = L.Control.extend({
 map.addControl(new ZoomVNControl());
 
 const markersLayer = L.layerGroup().addTo(map);
+
+// Sau mỗi lần zoom, ép toàn bộ điểm tính lại vị trí để không bị lệch
+map.on('zoomend', () => {
+    markersLayer.eachLayer(l => {
+        if (typeof l.update === 'function') l.update();
+        else if (typeof l.redraw === 'function') l.redraw();
+    });
+});
+
+// Khung bản đồ đổi kích thước (thu/phóng sidebar, đổi cỡ cửa sổ) => tính lại
+if (window.ResizeObserver) {
+    new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
+}
 const labelsLayer = L.layerGroup().addTo(map);
 const provincePolygonsLayer = L.layerGroup().addTo(map);
 const districtPolygonsLayer = L.layerGroup().addTo(map);

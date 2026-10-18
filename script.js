@@ -3,7 +3,9 @@
 // ==========================================
 const VN_BOUNDS = [[8.0, 102.0], [23.6, 109.8]];
 
-const map = L.map('map').setView([16.047079, 108.206230], 6);
+// zoomAnimation:false => tránh marker bị lệch/dính chùm do hiệu ứng zoom khi có nhiều điểm
+const map = L.map('map', { zoomAnimation: false, markerZoomAnimation: false })
+    .setView([16.047079, 108.206230], 6);
 
 // Thứ tự lớp (z-index): viền nền < viền có dữ liệu < điểm Target
 map.createPane('basePane');
@@ -96,6 +98,19 @@ const ZoomVNControl = L.Control.extend({
 map.addControl(new ZoomVNControl());
 
 const markersLayer = L.layerGroup().addTo(map);
+
+// Sau mỗi lần zoom, ép toàn bộ điểm tính lại vị trí để không bị lệch
+map.on('zoomend', () => {
+    markersLayer.eachLayer(l => {
+        if (typeof l.update === 'function') l.update();
+        else if (typeof l.redraw === 'function') l.redraw();
+    });
+});
+
+// Khung bản đồ đổi kích thước (thu/phóng sidebar, đổi cỡ cửa sổ) => tính lại
+if (window.ResizeObserver) {
+    new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
+}
 const labelsLayer = L.layerGroup().addTo(map);
 const provincePolygonsLayer = L.layerGroup().addTo(map);
 const districtPolygonsLayer = L.layerGroup().addTo(map);
@@ -383,8 +398,8 @@ const geoPromise = Promise.all([
 
 const excelPromise = loadExcelData();
 
-Promise.all([excelPromise, geoPromise])
-    .then(([data]) => {
+// Xử lý một bộ dữ liệu (dùng cho cả file mặc định lẫn file người dùng tải lên)
+function processData(data) {
         globalData = data;
 
         // --- QUÉT KHÔNG GIAN: tìm Tỉnh & Huyện cho từng điểm Actual / Target ---
@@ -434,7 +449,10 @@ Promise.all([excelPromise, geoPromise])
 
         renderSidebar(globalData);
         handleFilterChange();
-    })
+}
+
+Promise.all([excelPromise, geoPromise])
+    .then(([data]) => processData(data))
     .catch(error => {
         console.error('Lỗi khi tải dữ liệu:', error);
         showNotice('<b>Lỗi khi đọc dữ liệu.</b> Mở Console (F12) để xem chi tiết.');
@@ -484,6 +502,72 @@ document.querySelectorAll('.deselect-all').forEach(btn => {
 // ==========================================
 // 5. TẠO DANH SÁCH BỘ LỌC BÊN TRÁI
 // ==========================================
+// ---- Ô tải file Excel khác lên (chèn vào đầu sidebar trái) ----
+(function addUploadControl() {
+    const sidebar = document.getElementById('sidebar');
+    const filters = document.getElementById('filters-container');
+    if (!sidebar || !filters) return;
+
+    const box = document.createElement('div');
+    box.className = 'filter-section';
+    box.style.background = '#fff8e1';
+    box.innerHTML =
+        '<h4>📂 Tải file dữ liệu khác</h4>' +
+        '<input type="file" id="upload-excel" accept=".xlsx,.xls" style="width:100%; font-size:12px;">' +
+        '<div id="upload-status" style="font-size:12px; color:#666; margin-top:6px;">Đang dùng: file mặc định (toadoexcel.xlsx)</div>';
+    sidebar.insertBefore(box, filters);
+
+    const input = document.getElementById('upload-excel');
+    const status = document.getElementById('upload-status');
+
+    input.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        status.style.color = '#666';
+        status.textContent = 'Đang đọc ' + file.name + '...';
+
+        const reader = new FileReader();
+        reader.onerror = () => {
+            status.style.color = '#c00';
+            status.textContent = 'Không đọc được file này.';
+        };
+        reader.onload = ev => {
+            try {
+                const rows = parseWorkbook(ev.target.result);
+                if (!rows.length) throw new Error('File không có dòng dữ liệu nào.');
+
+                // Chờ ranh giới Tỉnh/Huyện tải xong rồi mới xử lý
+                geoPromise.then(() => {
+                    hideNotice();
+                    processData(rows);
+
+                    const pts = [];
+                    globalData.forEach(r => {
+                        if (r._hasActual) pts.push([r._latA, r._lngA]);
+                        if (r._hasTarget) pts.push([r._latT, r._lngT]);
+                    });
+
+                    if (!pts.length) {
+                        status.style.color = '#c00';
+                        status.textContent = file.name + ': không thấy cột tọa độ hợp lệ ' +
+                            '(cần latitude_actual, longitude_actual, latitude_target, longitude_target).';
+                        return;
+                    }
+                    map.fitBounds(pts, { padding: [40, 40] });
+                    status.style.color = '#28a745';
+                    status.textContent = 'Đang dùng: ' + file.name + ' (' + rows.length + ' dòng)';
+                });
+            } catch (err) {
+                console.error('Lỗi đọc file tải lên:', err);
+                status.style.color = '#c00';
+                status.textContent = 'Lỗi: ' + err.message;
+            }
+            input.value = '';   // cho phép chọn lại cùng một file
+        };
+        reader.readAsArrayBuffer(file);
+    });
+})();
+
 function renderSidebar(data) {
     const createCheckboxes = (containerId, items) => {
         const container = document.getElementById(containerId);
